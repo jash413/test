@@ -1,0 +1,70 @@
+steps:
+  # Download the .env file from Cloud Storage
+  - name: 'gcr.io/cloud-builders/gsutil'
+    args: ['cp', 'gs://buildify_env/env-files/.env.gcloud', '.env.gcloud']
+    id: 'download-env'
+
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      [
+        'build',
+        '-t',
+        'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$BUILD_ID',
+        '--cache-from',
+        'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest',
+        '--build-arg',
+        'BUILDKIT_INLINE_CACHE=1',
+        '--build-arg',
+        'ENV_FILE=.env.gcloud',
+        '.'
+      ]
+    id: 'build'
+    waitFor: ['download-env']
+
+  # Push the image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$BUILD_ID']
+    id: 'push'
+    waitFor: ['build']
+
+  # Tag the image as latest
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      [
+        'tag',
+        'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$BUILD_ID',
+        'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest'
+      ]
+    id: 'tag'
+    waitFor: ['push']
+
+  # Push the latest tag
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest']
+    id: 'push-latest'
+    waitFor: ['tag']
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud run deploy ${_SERVICE_NAME} \
+          --image gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$BUILD_ID \
+          --region ${_REGION} \
+          --set-env-vars "$(cat .env.gcloud | xargs)"
+    id: 'deploy'
+    waitFor: ['push']
+
+images:
+  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$BUILD_ID'
+  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest'
+
+options:
+  machineType: 'N1_HIGHCPU_8'
+
+substitutions:
+  _SERVICE_NAME: ynex-build
+  _REGION: us-south1
